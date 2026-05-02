@@ -1,6 +1,6 @@
 # Wechat Exporter
 
-一个本地运行的微信 4.x 群聊导出工具。它提供浏览器界面，用来预览群聊消息，并按时间范围导出干净的 CSV。
+一个本地运行的微信群聊导出工具。它提供浏览器界面，用来预览群聊消息，并按时间范围导出干净的 CSV。
 
 导出的 CSV 只包含三列：
 
@@ -10,16 +10,12 @@ time,sender,content
 
 ## 功能
 
-- 在浏览器中选择要导出的群聊
-- 搜索群聊
-- 预览最近消息，向上滚动可加载更早记录
-- 消息预览接近微信气泡样式
-- 链接和文件消息在预览中以卡片形式展示
-- 按时间范围导出：今天、近两天、近三天、一周、近一个月、全部、接着上次、近 N 天、自定义时间段
-- 自动记录每个群聊上次导出的结尾时间
-- 导出后自动打开 CSV 所在文件夹
-- 默认过滤 system / recall 类型消息
-- 默认清理群消息内容中内嵌的 wxid 前缀，只保留 sender
+- 选择性导出微信聊天记录
+  - 可选择要导出的群聊，导出的时间范围（近一周、近一个月等，可自定义）
+  - 可接着之前的导出结果继续导出，进而连续分析
+- 可在浏览器ui中预览聊天记录
+- 
+  
 
 ## 适用场景
 
@@ -65,7 +61,7 @@ python find_all_keys.py
 python decrypt_db.py
 ```
 
-生成的 `all_keys.json`、`config.json`、`decrypted/` 都包含本地敏感信息或数据库内容，已经在 `.gitignore` 中排除，不要提交。
+
 
 ## 启动导出界面
 
@@ -94,31 +90,16 @@ python export_ui.py
 
 ## CSV 字段
 
-| 字段 | 含义 |
-| --- | --- |
-| `time` | 本地时间，格式为 `YYYY-MM-DD HH:MM:SS` |
-| `sender` | 群成员显示名，自己发送的消息显示为 `me` |
-| `content` | 处理后的消息内容 |
-
-## 隐私与安全
-
-请只导出你有权访问的数据。这个项目设计为本地工具，不会主动上传任何聊天内容。
-
-以下内容不要提交到公开仓库：
-
-- `config.json`
-- `all_keys.json`
-- `decrypted/`
-- `exports/`
-- `.venv/`
-- 任何 `.db`、`.db-wal`、`.db-shm` 文件
-
-这些路径已在 `.gitignore` 中排除。
+| 字段        | 含义                             |
+| --------- | ------------------------------ |
+| `time`    | 本地时间，格式为 `YYYY-MM-DD HH:MM:SS` |
+| `sender`  | 群成员显示名，自己发送的消息显示为 `me`         |
+| `content` | 处理后的消息内容                       |
 
 ## 致谢与参考
 
-本项目最初从 [LC044/WeChatMsg](https://github.com/LC044/WeChatMsg) fork 而来，感谢原项目在微信聊天记录导出、联系人和消息展示方面的探索。
+感谢 [LC044/WeChatMsg](https://github.com/LC044/WeChatMsg) 在微信聊天记录导出、联系人和消息展示方面的探索。
 
-后续实现本地微信 4.x 数据读取与消息解析时，参考了 [ylytdeng/wechat-decrypt](https://github.com/ylytdeng/wechat-decrypt)。产品形态和导出体验也参考了 [hicccc77/WeFlow](https://github.com/hicccc77/WeFlow)。
+后续实现本地微信 4.x 数据读取与消息解析时，参考了 [ylytdeng/wechat-decrypt](https://github.com/ylytdeng/wechat-decrypt)。
 
 Wechat Exporter 在这些工作的基础上，聚焦为一个本地群聊 CSV 导出界面。
