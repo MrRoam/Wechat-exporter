@@ -117,9 +117,8 @@ python export_ui.py
 
 ## 致谢与参考
 
-本项目的本地数据库读取与消息解析思路参考了以下开源项目，在此感谢原作者：
+本项目最初从 [LC044/WeChatMsg](https://github.com/LC044/WeChatMsg) fork 而来，感谢原项目在微信聊天记录导出、联系人和消息展示方面的探索。
 
-- [ylytdeng/wechat-decrypt](https://github.com/ylytdeng/wechat-decrypt)：微信 4.x 本地数据库读取、解析与相关工具。
-- [hicccc77/WeFlow](https://github.com/hicccc77/WeFlow)：微信聊天记录导出产品形态参考。
+后续实现本地微信 4.x 数据读取与消息解析时，参考了 [ylytdeng/wechat-decrypt](https://github.com/ylytdeng/wechat-decrypt)。产品形态和导出体验也参考了 [hicccc77/WeFlow](https://github.com/hicccc77/WeFlow)。
 
-Wechat Exporter 在此基础上聚焦为一个本地群聊 CSV 导出界面。
+Wechat Exporter 在这些工作的基础上，聚焦为一个本地群聊 CSV 导出界面。
