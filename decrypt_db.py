@@ -7,7 +7,15 @@ WeChat 4.0 数据库解密器
 """
 import hashlib, struct, os, sys, json
 import hmac as hmac_mod
-from Crypto.Cipher import AES
+
+try:
+    from Crypto.Cipher import AES
+except ModuleNotFoundError as exc:
+    if exc.name == "Crypto":
+        raise SystemExit(
+            "缺少依赖 pycryptodome。请先运行：python -m pip install -r requirements.txt"
+        ) from None
+    raise
 
 import functools
 print = functools.partial(print, flush=True)

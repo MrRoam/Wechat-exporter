@@ -1,105 +1,124 @@
 # Wechat Exporter
 
-一个本地运行的微信群聊导出工具。它提供浏览器界面，用来预览群聊消息，并按时间范围导出干净的 CSV。
+本项目用于在本机导出微信聊天记录，重点是把聊天内容导出为干净的 CSV，方便归档、检索、分析或交给 AI 继续处理。
 
-导出的 CSV 只包含三列：
+读取、解密、预览和导出都在本机完成，不会上传聊天记录。
 
-```csv
-time,sender,content
+## 快速开始
+
+先确认 Windows 微信已经登录并保持运行，然后在项目目录执行：
+
+```powershell
+python -m pip install -r requirements.txt
+python prepare_data.py
+python export_ui.py
 ```
 
-## 功能
+`export_ui.py` 启动后会自动打开浏览器。默认地址是：
 
-- 选择性导出微信聊天记录
-  - 可选择要导出的群聊，导出的时间范围（近一周、近一个月等，可自定义）
-  - 可接着之前的导出结果继续导出，进而连续分析
-- 可在浏览器ui中预览聊天记录
-- 
-  
-
-## 适用场景
-
-这个项目适合把自己本机微信里的群聊记录导出为 CSV，用于归档、检索、分析或后续整理。
-
-它不是云服务，不上传聊天记录。所有读取、预览和导出都在本机完成。
-
-## 环境要求
-
-- Python 3.10+
-- 微信 4.x
-- Windows 10/11 优先支持
-
-项目依赖：
-
-```bash
-pip install -r requirements.txt
+```text
+http://127.0.0.1:8765/
 ```
 
-## 准备数据
+如果 `8765` 已被占用，程序会自动换到下一个可用端口，请以终端里打印的 `Export UI: ...` 地址为准。
 
-首次使用前，需要先让项目能读取本机微信数据库。复制示例配置：
+如果使用项目里的虚拟环境，把上面的 `python` 换成：
 
-```bash
-copy config.example.json config.json
+```powershell
+.\.venv\Scripts\python
 ```
 
-编辑 `config.json`：
+## 两个启动命令都要运行吗？
+
+不一定。
+
+`python prepare_data.py` 用来准备或刷新数据：自动定位微信数据目录、提取密钥、解密数据库。
+
+`python export_ui.py` 用来启动本地浏览器导出界面。
+
+建议这样用：
+
+- 第一次运行：先 `python prepare_data.py`，再 `python export_ui.py`
+- 想导出最新聊天记录：先重新跑 `python prepare_data.py`，再打开 UI
+- 已经准备过数据，只是重新打开导出界面：只跑 `python export_ui.py`
+
+## 配置
+
+通常不需要手动编辑 `config.json`。程序会优先从微信本地配置中自动发现 `db_storage` 目录，并生成或更新 `config.json`。
+
+只有自动发现失败时，才需要手动填写 `db_dir`：
 
 ```json
 {
   "db_dir": "D:\\xwechat_files\\your_wxid\\db_storage",
   "keys_file": "all_keys.json",
   "decrypted_dir": "decrypted",
+  "decoded_image_dir": "decoded_images",
   "wechat_process": "Weixin.exe"
 }
 ```
 
-然后在微信运行时执行：
+一般只需要改 `db_dir`，其他字段保持默认即可。
 
-```bash
-python find_all_keys.py
-python decrypt_db.py
+## 常用命令
+
+准备或刷新数据：
+
+```powershell
+python prepare_data.py
 ```
 
+打开浏览器导出界面：
 
-
-## 启动导出界面
-
-```bash
+```powershell
 python export_ui.py
 ```
 
-默认打开：
+命令行导出单个聊天为 JSON：
 
-```text
-http://127.0.0.1:8765/
+```powershell
+python export_chat.py "聊天名称" output.json
 ```
 
-如果浏览器没有自动打开，手动访问上面的地址即可。
-
-## 导出目录
-
-默认导出到项目内的 `exports/`。你也可以用环境变量指定输出位置：
+指定 CSV 导出目录：
 
 ```powershell
 $env:WECHAT_EXPORT_DIR="D:\wechat-exports"
 python export_ui.py
 ```
 
-导出文件和导出状态文件都不会被 Git 跟踪。
+## 常见问题
 
-## CSV 字段
+如果看到：
 
-| 字段        | 含义                             |
-| --------- | ------------------------------ |
-| `time`    | 本地时间，格式为 `YYYY-MM-DD HH:MM:SS` |
-| `sender`  | 群成员显示名，自己发送的消息显示为 `me`         |
-| `content` | 处理后的消息内容                       |
+```text
+ModuleNotFoundError: No module named 'Crypto'
+```
 
-## 致谢与参考
+说明当前 Python 环境缺少依赖，运行：
 
-感谢 [LC044/WeChatMsg](https://github.com/LC044/WeChatMsg) 在微信聊天记录导出、联系人和消息展示方面的探索。
+```powershell
+python -m pip install -r requirements.txt
+```
 
-后续实现本地微信 4.x 数据读取与消息解析时，参考了 [ylytdeng/wechat-decrypt](https://github.com/ylytdeng/wechat-decrypt)。
+如果使用虚拟环境，安装依赖和运行脚本必须使用同一个 Python：
 
-Wechat Exporter 在这些工作的基础上，聚焦为一个本地群聊 CSV 导出界面。
+```powershell
+.\.venv\Scripts\python -m pip install -r requirements.txt
+.\.venv\Scripts\python prepare_data.py
+.\.venv\Scripts\python export_ui.py
+```
+
+## 输出
+
+CSV 默认导出到项目内的 `exports/` 目录，包含两列：
+
+```csv
+sender,content
+```
+
+`all_keys.json`、`config.json`、`decrypted/`、`decoded_images/`、`exports/` 等本地数据会被 Git 忽略，避免误提交私密数据。
+
+## 致谢
+
+感谢 [LC044/WeChatMsg](https://github.com/LC044/WeChatMsg) 和 [ylytdeng/wechat-decrypt](https://github.com/ylytdeng/wechat-decrypt) 在微信聊天记录展示、联系人解析和 WeChat 4.x 数据解密方向的探索。

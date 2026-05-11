@@ -299,7 +299,7 @@ def extract_md5_from_packed_info(blob):
 class ImageResolver:
     """封装从 local_id 到图片文件的完整解析链"""
 
-    def __init__(self, wechat_base_dir, decoded_image_dir, cache):
+    def __init__(self, wechat_base_dir, decoded_image_dir, cache, image_aes_key=None):
         """
         Args:
             wechat_base_dir: 微信数据根目录 (如 D:\\xwechat_files\\<wxid>)
@@ -310,8 +310,9 @@ class ImageResolver:
         self.attach_dir = os.path.join(wechat_base_dir, "msg", "attach")
         self.out_dir = decoded_image_dir
         self.cache = cache
+        self.image_aes_key = image_aes_key
 
-    def get_image_md5(self, local_id):
+    def get_image_md5(self, local_id, username=None):
         """通过 local_id 查 message_resource.db 获取图片文件 MD5"""
         path = self.cache.get("message/message_resource.db")
         if not path:
@@ -319,10 +320,42 @@ class ImageResolver:
 
         conn = sqlite3.connect(path)
         try:
-            row = conn.execute(
-                "SELECT packed_info FROM MessageResourceInfo WHERE local_id = ?",
-                (local_id,)
-            ).fetchone()
+            try:
+                row = conn.execute(
+                    "SELECT packed_info FROM MessageResourceInfo WHERE local_id = ?",
+                    (local_id,)
+                ).fetchone()
+            except sqlite3.OperationalError:
+                chat_id = None
+                if username:
+                    chat_row = conn.execute(
+                        "SELECT rowid FROM ChatName2Id WHERE user_name = ?",
+                        (username,)
+                    ).fetchone()
+                    if chat_row:
+                        chat_id = chat_row[0]
+                if chat_id is not None:
+                    row = conn.execute(
+                        """
+                        SELECT packed_info
+                        FROM MessageResourceInfo
+                        WHERE chat_id = ? AND message_local_id = ? AND length(packed_info) > 0
+                        ORDER BY message_id DESC
+                        LIMIT 1
+                        """,
+                        (chat_id, local_id)
+                    ).fetchone()
+                else:
+                    row = conn.execute(
+                        """
+                        SELECT packed_info
+                        FROM MessageResourceInfo
+                        WHERE message_local_id = ? AND length(packed_info) > 0
+                        ORDER BY message_id DESC
+                        LIMIT 1
+                        """,
+                        (local_id,)
+                    ).fetchone()
             if row and row[0]:
                 return extract_md5_from_packed_info(row[0])
         except Exception:
@@ -349,6 +382,11 @@ class ImageResolver:
         for p in glob.glob(pattern):
             results.append(p)
 
+        if not results:
+            pattern = os.path.join(self.attach_dir, "*", "*", "Img", f"{file_md5}*.dat")
+            for p in glob.glob(pattern):
+                results.append(p)
+
         return sorted(results)
 
     def decode_image(self, username, local_id):
@@ -358,7 +396,7 @@ class ImageResolver:
             dict with keys: success, path, format, md5, error
         """
         # 1. 获取 MD5
-        file_md5 = self.get_image_md5(local_id)
+        file_md5 = self.get_image_md5(local_id, username)
         if not file_md5:
             return {'success': False, 'error': f'无法从 message_resource.db 找到 local_id={local_id} 的图片信息'}
 
@@ -383,8 +421,10 @@ class ImageResolver:
         out_name = f"{file_md5}"
         out_path_base = os.path.join(self.out_dir, out_name)
 
-        result_path, fmt = xor_decrypt_file(selected, f"{out_path_base}.tmp")
+        result_path, fmt = decrypt_dat_file(selected, f"{out_path_base}.tmp", aes_key=self.image_aes_key)
         if not result_path:
+            if is_v2_format(selected) and not self.image_aes_key:
+                return {'success': False, 'error': f'V2 图片缺少 AES key (文件: {selected})', 'md5': file_md5}
             return {'success': False, 'error': f'无法检测 XOR key (文件: {selected})', 'md5': file_md5}
 
         # 重命名为正确扩展名
@@ -420,7 +460,7 @@ class ImageResolver:
 
         results = []
         for local_id, create_time in rows:
-            file_md5 = self.get_image_md5(local_id)
+            file_md5 = self.get_image_md5(local_id, username)
             info = {
                 'local_id': local_id,
                 'create_time': create_time,

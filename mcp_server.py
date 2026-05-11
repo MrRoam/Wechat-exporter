@@ -12,9 +12,38 @@ import hmac as hmac_mod
 from contextlib import closing
 from datetime import datetime
 import xml.etree.ElementTree as ET
-from Crypto.Cipher import AES
-from mcp.server.fastmcp import FastMCP
-import zstandard as zstd
+
+try:
+    from Crypto.Cipher import AES
+except ModuleNotFoundError as exc:
+    if exc.name == "Crypto":
+        raise SystemExit(
+            "缺少依赖 pycryptodome。请先在项目目录运行：\n"
+            "  python -m pip install -r requirements.txt\n"
+            "如果你使用虚拟环境，请先激活 .venv，或运行：\n"
+            "  .\\.venv\\Scripts\\python -m pip install -r requirements.txt"
+        ) from None
+    raise
+
+try:
+    from mcp.server.fastmcp import FastMCP
+except ModuleNotFoundError as exc:
+    if exc.name == "mcp":
+        raise SystemExit(
+            "缺少依赖 mcp。请先运行：python -m pip install -r requirements.txt"
+        ) from None
+    raise
+
+try:
+    import zstandard as zstd
+except ModuleNotFoundError as exc:
+    if exc.name == "zstandard":
+        raise SystemExit(
+            "缺少依赖 zstandard。请先运行：python -m pip install -r requirements.txt"
+        ) from None
+    raise
+
+from config import load_config
 from decode_image import ImageResolver
 from key_utils import get_key_info, key_path_variants, strip_key_metadata
 
@@ -23,6 +52,7 @@ PAGE_SZ = 4096
 KEY_SZ = 32
 SALT_SZ = 16
 RESERVE_SZ = 80
+HMAC_SZ = 64
 SQLITE_HDR = b'SQLite format 3\x00'
 WAL_HEADER_SZ = 32
 WAL_FRAME_HEADER_SZ = 24
@@ -31,8 +61,7 @@ WAL_FRAME_HEADER_SZ = 24
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(SCRIPT_DIR, "config.json")
 
-with open(CONFIG_FILE, encoding="utf-8") as f:
-    _cfg = json.load(f)
+_cfg = load_config()
 for _key in ("keys_file", "decrypted_dir"):
     if _key in _cfg and not os.path.isabs(_cfg[_key]):
         _cfg[_key] = os.path.join(SCRIPT_DIR, _cfg[_key])
@@ -53,11 +82,39 @@ if not DECODED_IMAGE_DIR:
     DECODED_IMAGE_DIR = os.path.join(SCRIPT_DIR, "decoded_images")
 elif not os.path.isabs(DECODED_IMAGE_DIR):
     DECODED_IMAGE_DIR = os.path.join(SCRIPT_DIR, DECODED_IMAGE_DIR)
+IMAGE_AES_KEY = _cfg.get("image_aes_key") or os.environ.get("WECHAT_IMAGE_AES_KEY")
+
+if not os.path.exists(KEYS_FILE):
+    raise SystemExit(
+        f"还没有找到密钥文件：{KEYS_FILE}\n"
+        "请先保持微信登录并运行：python prepare_data.py\n"
+        "也可以分步运行：python find_all_keys.py，然后 python decrypt_db.py"
+    )
 
 with open(KEYS_FILE, encoding="utf-8") as f:
     ALL_KEYS = strip_key_metadata(json.load(f))
 
 # ============ 解密函数 ============
+
+def _key_signature(key_info):
+    enc_key = key_info.get("enc_key", "")
+    salt = key_info.get("salt", "")
+    return hashlib.sha256(f"{enc_key}:{salt}".encode("ascii", errors="ignore")).hexdigest()
+
+
+def _verify_page_hmac(enc_key, page_data, pgno):
+    salt = page_data[:SALT_SZ]
+    mac_salt = bytes(b ^ 0x3a for b in salt)
+    mac_key = hashlib.pbkdf2_hmac("sha512", enc_key, mac_salt, 2, dklen=KEY_SZ)
+    if pgno == 1:
+        hmac_data = page_data[SALT_SZ : PAGE_SZ - RESERVE_SZ + 16]
+    else:
+        hmac_data = page_data[: PAGE_SZ - RESERVE_SZ + 16]
+    stored_hmac = page_data[PAGE_SZ - HMAC_SZ : PAGE_SZ]
+    hm = hmac_mod.new(mac_key, hmac_data, hashlib.sha512)
+    hm.update(struct.pack("<I", pgno))
+    return hmac_mod.compare_digest(hm.digest(), stored_hmac)
+
 
 def decrypt_page(enc_key, page_data, pgno):
     iv = page_data[PAGE_SZ - RESERVE_SZ : PAGE_SZ - RESERVE_SZ + 16]
@@ -77,6 +134,12 @@ def full_decrypt(db_path, out_path, enc_key):
     file_size = os.path.getsize(db_path)
     total_pages = file_size // PAGE_SZ
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(db_path, 'rb') as fin:
+        page1 = fin.read(PAGE_SZ)
+    if len(page1) < PAGE_SZ:
+        raise ValueError(f"DB file is too small: {db_path}")
+    if not _verify_page_hmac(enc_key, page1, 1):
+        raise ValueError(f"DB key HMAC check failed: {db_path}")
     with open(db_path, 'rb') as fin, open(out_path, 'wb') as fout:
         for pgno in range(1, total_pages + 1):
             page = fin.read(PAGE_SZ)
@@ -124,6 +187,24 @@ def decrypt_wal(wal_path, out_path, enc_key):
 
 # ============ DB 缓存 ============
 
+def _validate_sqlite_db(path):
+    try:
+        conn = sqlite3.connect(path)
+        try:
+            tables = [
+                row[0]
+                for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                if not str(row[0]).startswith("sqlite_")
+            ]
+            for table in tables:
+                conn.execute(f"SELECT * FROM [{table}] LIMIT 1").fetchone()
+            return True
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError:
+        return False
+
+
 class DBCache:
     """缓存解密后的 DB，通过 mtime 检测变化。使用固定文件名，重启后可复用。"""
 
@@ -131,7 +212,7 @@ class DBCache:
     MTIME_FILE = os.path.join(tempfile.gettempdir(), "wechat_mcp_cache", "_mtimes.json")
 
     def __init__(self):
-        self._cache = {}  # rel_key -> (db_mtime, wal_mtime, tmp_path)
+        self._cache = {}  # rel_key -> (db_mtime, wal_mtime, key_sig, tmp_path)
         os.makedirs(self.CACHE_DIR, exist_ok=True)
         self._load_persistent_cache()
 
@@ -151,6 +232,12 @@ class DBCache:
             return
         reused = 0
         for rel_key, info in saved.items():
+            key_info = get_key_info(ALL_KEYS, rel_key)
+            if not key_info:
+                continue
+            key_sig = _key_signature(key_info)
+            if info.get("key_sig") != key_sig:
+                continue
             tmp_path = info["path"]
             if not os.path.exists(tmp_path):
                 continue
@@ -162,8 +249,8 @@ class DBCache:
                 wal_mtime = os.path.getmtime(wal_path) if os.path.exists(wal_path) else 0
             except OSError:
                 continue
-            if db_mtime == info["db_mt"] and wal_mtime == info["wal_mt"]:
-                self._cache[rel_key] = (db_mtime, wal_mtime, tmp_path)
+            if db_mtime == info["db_mt"] and wal_mtime == info["wal_mt"] and _validate_sqlite_db(tmp_path):
+                self._cache[rel_key] = (db_mtime, wal_mtime, key_sig, tmp_path)
                 reused += 1
         if reused:
             print(f"[DBCache] reused {reused} cached decrypted DBs from previous run", flush=True)
@@ -171,8 +258,8 @@ class DBCache:
     def _save_persistent_cache(self):
         """持久化缓存映射到磁盘"""
         data = {}
-        for rel_key, (db_mt, wal_mt, path) in self._cache.items():
-            data[rel_key] = {"db_mt": db_mt, "wal_mt": wal_mt, "path": path}
+        for rel_key, (db_mt, wal_mt, key_sig, path) in self._cache.items():
+            data[rel_key] = {"db_mt": db_mt, "wal_mt": wal_mt, "key_sig": key_sig, "path": path}
         try:
             with open(self.MTIME_FILE, 'w', encoding="utf-8") as f:
                 json.dump(data, f)
@@ -183,6 +270,7 @@ class DBCache:
         key_info = get_key_info(ALL_KEYS, rel_key)
         if not key_info:
             return None
+        key_sig = _key_signature(key_info)
         rel_path = rel_key.replace('\\', '/').replace('/', os.sep)
         db_path = os.path.join(DB_DIR, rel_path)
         wal_path = db_path + "-wal"
@@ -196,16 +284,28 @@ class DBCache:
             return None
 
         if rel_key in self._cache:
-            c_db_mt, c_wal_mt, c_path = self._cache[rel_key]
-            if c_db_mt == db_mtime and c_wal_mt == wal_mtime and os.path.exists(c_path):
+            c_db_mt, c_wal_mt, c_key_sig, c_path = self._cache[rel_key]
+            if c_db_mt == db_mtime and c_wal_mt == wal_mtime and c_key_sig == key_sig and os.path.exists(c_path):
                 return c_path
 
         tmp_path = self._cache_path(rel_key)
         enc_key = bytes.fromhex(key_info["enc_key"])
-        full_decrypt(db_path, tmp_path, enc_key)
-        if os.path.exists(wal_path):
-            decrypt_wal(wal_path, tmp_path, enc_key)
-        self._cache[rel_key] = (db_mtime, wal_mtime, tmp_path)
+        try:
+            full_decrypt(db_path, tmp_path, enc_key)
+            if os.path.exists(wal_path):
+                decrypt_wal(wal_path, tmp_path, enc_key)
+            if not _validate_sqlite_db(tmp_path):
+                full_decrypt(db_path, tmp_path, enc_key)
+            if not _validate_sqlite_db(tmp_path):
+                raise ValueError(f"decrypted DB is not a valid SQLite database: {tmp_path}")
+        except Exception:
+            try:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        self._cache[rel_key] = (db_mtime, wal_mtime, key_sig, tmp_path)
         self._save_persistent_cache()
         return tmp_path
 
@@ -245,30 +345,37 @@ def _load_contacts_from(db_path):
     return names, full
 
 
+def _contact_db_paths():
+    paths = []
+    pre_decrypted = os.path.join(DECRYPTED_DIR, "contact", "contact.db")
+    if os.path.exists(pre_decrypted):
+        paths.append(pre_decrypted)
+
+    live_path = _cache.get(os.path.join("contact", "contact.db"))
+    if live_path and live_path not in paths:
+        paths.append(live_path)
+    return paths
+
+
 def get_contact_names():
     global _contact_names, _contact_full
     if _contact_names is not None:
         return _contact_names
 
-    # 优先用已解密的 contact.db
-    pre_decrypted = os.path.join(DECRYPTED_DIR, "contact", "contact.db")
-    if os.path.exists(pre_decrypted):
+    merged_names = {}
+    merged_full = {}
+    for path in _contact_db_paths():
         try:
-            _contact_names, _contact_full = _load_contacts_from(pre_decrypted)
-            return _contact_names
+            names, full = _load_contacts_from(path)
         except Exception:
-            pass
+            continue
+        merged_names.update(names)
+        for item in full:
+            merged_full[item["username"]] = item
 
-    # 实时解密
-    path = _cache.get(os.path.join("contact", "contact.db"))
-    if path:
-        try:
-            _contact_names, _contact_full = _load_contacts_from(path)
-            return _contact_names
-        except Exception:
-            pass
-
-    return {}
+    _contact_names = merged_names
+    _contact_full = list(merged_full.values())
+    return _contact_names
 
 
 def get_contact_full():
@@ -280,10 +387,8 @@ def get_contact_full():
 
 def _get_contact_db_path():
     """获取 contact.db 路径（优先已解密，其次实时解密）"""
-    pre = os.path.join(DECRYPTED_DIR, "contact", "contact.db")
-    if os.path.exists(pre):
-        return pre
-    return _cache.get(os.path.join("contact", "contact.db"))
+    paths = _contact_db_paths()
+    return paths[-1] if paths else None
 
 
 def _extract_pb_field_30(data):
@@ -1664,7 +1769,7 @@ def get_new_messages() -> str:
 
 # ============ 图片解密 ============
 
-_image_resolver = ImageResolver(WECHAT_BASE_DIR, DECODED_IMAGE_DIR, _cache)
+_image_resolver = ImageResolver(WECHAT_BASE_DIR, DECODED_IMAGE_DIR, _cache, IMAGE_AES_KEY)
 
 
 @mcp.tool()

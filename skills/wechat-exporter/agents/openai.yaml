@@ -1,0 +1,4 @@
+interface:
+  display_name: "Wechat Exporter"
+  short_description: "Export local WeChat chats through UI, CLI, or MCP."
+  default_prompt: "Use this skill to initialize Wechat Exporter, open the export UI, query chats through MCP, or schedule repeat exports."
